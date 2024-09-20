@@ -1,0 +1,1699 @@
+---
+title: "Composition 24HAC in older with MCI and associations with brain structure
+  - Data Analysis"
+author: "Guilherme Moraes Balbim"
+date: "09/20/2024"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    toc: true
+    number_sections: true
+    toc_depth: 5
+  word_document:
+    toc: true
+    toc_depth: '5'
+  editor_options:
+    chunk_output_type: console
+  chunk_output_type: console
+  html_document:
+    toc: true
+    toc_depth: '5'
+    df_print: paged
+header-includes:
+- \usepackage{caption}
+- \usepackage{pdflscape}
+- \newcommand{\blandscape}{\begin{landscape}}
+- \newcommand{\elandscape}{\end{landscape}}
+geometry: left = 1cm, right = 1cm, top = 1cm, bottom = 1cm
+---
+
+\newpage
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  message = FALSE,
+  fig.height = 7, fig.width = 9, fig.align = "center")
+```
+
+\small
+
+# Loading packages
+
+```{r, message=FALSE}
+
+## Enable this universe for ggseg3d
+# options(repos = c(
+#   ggseg = 'https://ggseg.r-universe.dev',
+#   CRAN = 'https://cloud.r-project.org'))
+ 
+# Installing ggsegGLasser
+## Enable this universe
+options(repos = c(
+    ggseg = 'https://ggseg.r-universe.dev',
+    CRAN = 'https://cloud.r-project.org'))
+
+# Loading packages
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(tidyverse,dplyr,tidyr,stringr,lubridate,knitr,openxlsx,readxl,tableone,tinytex,broom,janitor,skimr,ggseg,PerformanceAnalytics,performance,ggplot2,ggsegGlasser,ggseg3d,stringr,ggtern,plotly,compositions,car,codaredistlm, ggsegExtra,viridis,ggrepel,plotly,patchwork,ggpubr)
+
+# Fixing decimal cases
+options(scipen = 999)
+```
+
+# Loading raw dataset without brain measures
+```{r, message=FALSE}
+pre_brain_data <- read.xlsx("../00.spreadsheets/pre_brain_data_20231121.xlsx")
+
+# Exclude participants with <5 days of data, < 4h, and > 12h of sleep = 111 participants
+
+pre_brain_data <- pre_brain_data %>% 
+  filter(total_days >= 5) %>% 
+  filter(avg_sleep_min > 240 | avg_sleep_min < 720)
+
+skim(pre_brain_data)
+
+# Exclude data not needed
+pre_brain_data <- pre_brain_data %>% 
+  select(-c(21:26,29:48))
+
+```
+
+## Outliers
+```{r}
+## Checking outliers
+avg_sleep_min_outliers <- check_outliers(pre_brain_data$avg_sleep_min,  method = "iqr")
+avg_sleep_min_outliers # 1 outlier >1.5xIQR: 104.
+
+avg_sedentary_min_outliers <- check_outliers(pre_brain_data$avg_sedentary_min,  method = "iqr")
+avg_sedentary_min_outliers # No outliers
+
+avg_light_pa_min_outliers <- check_outliers(pre_brain_data$avg_light_pa_min,  method = "iqr")
+avg_light_pa_min_outliers # No outliers
+
+avg_mvpa_min_outliers <- check_outliers(pre_brain_data$avg_mvpa_min, method = "iqr")
+avg_mvpa_min_outliers # 5 outliers >1.5xIQR: cases 26, 82, 97, 100, 101.
+
+# Winsorizing outliers
+timeusebehav_wins <- pre_brain_data
+
+for(var in c("avg_sleep_min","avg_sedentary_min","avg_light_pa_min","avg_mvpa_min")){
+  Q <- quantile(timeusebehav_wins[[var]], probs=c(.05, .95), na.rm = TRUE)
+  Q1 <- quantile(timeusebehav_wins[[var]], probs=c(.25), na.rm = TRUE)
+  Q3 <- quantile(timeusebehav_wins[[var]], probs=c(.75), na.rm = TRUE)
+  iqr <- IQR(timeusebehav_wins[[var]], na.rm = TRUE)
+  up <-  Q3+1.5*iqr # Upper Range  
+  low <- Q1-1.5*iqr # Lower Range
+  new <- timeusebehav_wins %>% 
+    mutate(wins = ifelse(timeusebehav_wins[[var]] <= (Q1 - 1.5*iqr), Q[1], 
+                         ifelse(timeusebehav_wins[[var]] >= (Q3 + 1.5*iqr), Q[2], timeusebehav_wins[[var]]))) %>% 
+    select(wins) %>% 
+    rename_with(~paste0(var, "_",.))
+  timeusebehav_wins <- cbind(timeusebehav_wins, new)
+}
+
+## Checking distribution with winsorized data
+### Histograms
+timeusebehav_wins %>%
+  select("avg_sleep_min_wins","avg_sedentary_min_wins","avg_light_pa_min_wins","avg_mvpa_min_wins") %>%
+  pivot_longer(cols = 1:4, names_to = "measures", values_to = "data") %>%
+  ggplot(aes(data, fill = measures)) +
+  facet_wrap("measures", scale = "free") +
+  geom_histogram(colour = "black", binwidth = function(x) 2 * IQR(x) / (length(x)^(1/3))) + # Proportional bins
+  theme_minimal() +
+  theme(legend.position = "none")
+
+
+## 24HAC behaviours by study
+kable(print(printToggle = FALSE, CreateTableOne(data = timeusebehav_wins, 
+                                                c("avg_sleep_min_wins",
+                                                  "avg_sedentary_min_wins",
+                                                  "avg_light_pa_min_wins",
+                                                  "avg_mvpa_min_wins"), strata = "rct", 
+                                                  includeNA = TRUE, addOverall = TRUE))) # NS
+
+
+## 24HAC behaviours by existing and new IDs
+kable(print(printToggle = FALSE, CreateTableOne(data = timeusebehav_wins, 
+                                                c("avg_sleep_min_wins",
+                                                  "avg_sedentary_min_wins",
+                                                  "avg_light_pa_min_wins",
+                                                  "avg_mvpa_min_wins"), strata = "new_id_flag", 
+                                                  includeNA = TRUE, addOverall = TRUE)))
+
+pre_brain_data_wins <- timeusebehav_wins
+
+```
+
+# Preparing dataset for compositions
+## Check time-use data adds up 1440min
+### Raw
+```{r message=FALSE}
+
+rowSums(pre_brain_data_wins[, 
+                  c("avg_mvpa_min", "avg_sedentary_min", "avg_light_pa_min", "avg_sleep_min")
+]) # No, will need the closure from compositions
+
+# Create day duration variable
+pre_brain_data_wins <- pre_brain_data_wins %>% 
+  mutate(day_duration_wins = rowSums(pre_brain_data_wins[,c("avg_mvpa_min_wins", "avg_sedentary_min_wins", "avg_light_pa_min_wins", "avg_sleep_min_wins")]),
+         day_duration = rowSums(pre_brain_data_wins[,c("avg_mvpa_min", "avg_sedentary_min", "avg_light_pa_min", "avg_sleep_min")]))
+
+```
+
+### Winsorized
+```{r message=FALSE}
+
+rowSums(pre_brain_data_wins[, 
+                  c("avg_mvpa_min_wins", "avg_sedentary_min_wins", "avg_light_pa_min_wins", "avg_sleep_min_wins")
+]) # No, will need the closure from compositions
+  
+```
+
+## Closure function (compositions package)
+### Raw
+```{r message=FALSE}
+
+# Create dataframes containing the predictors and covariates
+cols_pred_min <- c("avg_mvpa_min", "avg_sedentary_min", "avg_light_pa_min", "avg_sleep_min")
+cols_id_covars <- c("id","sex","age", "bmi", "moca", "mmse", "education", "rct")
+
+# Combine all dataframes
+cols_pairwise <- c(cols_pred_min, cols_id_covars)
+
+# Create new dataframe containing all rows from pre_brain_data_wins but only cols_pairwise columns
+pairwise_data <- pre_brain_data_wins[, cols_pairwise] %>% 
+  relocate(id)
+
+# Ensuring that time-use data have a total of 1440min
+behav_min <- pairwise_data %>% 
+  select("avg_mvpa_min", "avg_sedentary_min", "avg_light_pa_min", "avg_sleep_min")
+
+behav_min_clo <- data.frame(clo(behav_min, total = 1440)) %>% 
+    rename_with(~gsub("min", "min_clos", .), contains("min"))
+
+rowSums(behav_min_clo) 
+
+```
+
+### Winsorized
+```{r message=FALSE}
+
+# Create dataframes containing the predictors and covariates
+cols_pred_min_wins <- c("avg_mvpa_min_wins", "avg_sedentary_min_wins", "avg_light_pa_min_wins", "avg_sleep_min_wins")
+cols_id_covars <- c("id","sex","age", "bmi", "moca", "mmse", "education", "rct")
+
+# Combine all dataframes
+cols_pairwise <- c(cols_pred_min_wins, cols_id_covars)
+
+# Create new dataframe containing all rows from pre_brain_data_wins but only cols_pairwise columns
+pairwise_data <- pre_brain_data_wins[, cols_pairwise] %>% 
+  relocate(id)
+
+# Ensuring that time-use data have a total of 1440min
+behav_min_wins <- pairwise_data %>% 
+  select("avg_mvpa_min_wins", "avg_sedentary_min_wins", "avg_light_pa_min_wins", "avg_sleep_min_wins")
+
+behav_min_wins_clo <- data.frame(clo(behav_min_wins, total = 1440)) %>% 
+    rename_with(~gsub("min", "min_clos", .), contains("min"))
+
+rowSums(behav_min_wins_clo) 
+
+# Appending 24hac raw and wins closure behaviours to final data
+behav_min_wins_clo_id <- cbind(pre_brain_data_wins$id, behav_min_clo) %>% 
+  rename("id" = "pre_brain_data_wins$id") %>% 
+  bind_cols(., behav_min_wins_clo)
+
+
+all_data <- left_join(pre_brain_data_wins, behav_min_wins_clo_id, by = "id")
+
+```
+
+## Creating percentage from closure data
+```{r message=FALSE}
+
+all_data <- all_data %>% 
+  mutate(avg_mvpa_pct_clos = (avg_mvpa_min_clos/1440)*100,
+         avg_light_pa_pct_clos = (avg_light_pa_min_clos/1440)*100,
+         avg_sedentary_pct_clos = (avg_sedentary_min_clos/1440)*100,
+         avg_sleep_pct_clos = (avg_sleep_min_clos/1440)*100,
+         avg_mvpa_pct_clos_wins = (avg_mvpa_min_clos_wins/1440)*100,
+         avg_light_pa_pct_clos_wins = (avg_light_pa_min_clos_wins/1440)*100,
+         avg_sedentary_pct_clos_wins = (avg_sedentary_min_clos_wins/1440)*100,
+         avg_sleep_pct_clos_wins = (avg_sleep_min_clos_wins/1440)*100)
+
+```
+
+## Arranging data
+### Raw
+```{r message=FALSE}
+
+cols_pred_mvpapivot_pct <- c("avg_mvpa_pct_clos", "avg_sedentary_pct_clos", "avg_light_pa_pct_clos", "avg_sleep_pct_clos")
+cols_pred_mvpapivot_min <- c("avg_mvpa_min_clos", "avg_sedentary_min_clos", "avg_light_pa_min_clos", "avg_sleep_min_clos")
+
+cols_pred_sbpivot_pct <- c("avg_sedentary_pct_clos", "avg_light_pa_pct_clos", "avg_sleep_pct_clos", "avg_mvpa_pct_clos")
+cols_pred_sbpivot_min <- c("avg_sedentary_min_clos", "avg_light_pa_min_clos", "avg_sleep_min_clos", "avg_mvpa_min_clos")
+
+cols_pred_lpapivot_pct <- c("avg_light_pa_pct_clos", "avg_sleep_pct_clos", "avg_mvpa_pct_clos", "avg_sedentary_pct_clos")
+cols_pred_lpapivot_min <- c("avg_light_pa_min_clos", "avg_sleep_min_clos", "avg_mvpa_min_clos", "avg_sedentary_min_clos")
+
+cols_pred_sleeppivot_pct <- c("avg_sleep_pct_clos", "avg_mvpa_pct_clos", "avg_sedentary_pct_clos", "avg_light_pa_pct_clos")
+cols_pred_sleeppivot_min <- c("avg_sleep_min_clos", "avg_mvpa_min_clos", "avg_sedentary_min_clos", "avg_light_pa_min_clos")
+
+```
+
+### Winsorized
+```{r message=FALSE}
+
+cols_pred_mvpapivot_pct_wins <- c("avg_mvpa_pct_clos_wins", "avg_sedentary_pct_clos_wins", "avg_light_pa_pct_clos_wins", "avg_sleep_pct_clos_wins")
+cols_pred_mvpapivot_min_wins <- c("avg_mvpa_min_clos_wins", "avg_sedentary_min_clos_wins", "avg_light_pa_min_clos_wins", "avg_sleep_min_clos_wins")
+
+cols_pred_sbpivot_pct_wins <- c("avg_sedentary_pct_clos_wins", "avg_light_pa_pct_clos_wins", "avg_sleep_pct_clos_wins", "avg_mvpa_pct_clos_wins")
+cols_pred_sbpivot_min_wins <- c("avg_sedentary_min_clos_wins", "avg_light_pa_min_clos_wins", "avg_sleep_min_clos_wins", "avg_mvpa_min_clos_wins")
+
+cols_pred_lpapivot_pct_wins <- c("avg_light_pa_pct_clos_wins", "avg_sleep_pct_clos_wins", "avg_mvpa_pct_clos_wins", "avg_sedentary_pct_clos_wins")
+cols_pred_lpapivot_min_wins <- c("avg_light_pa_min_clos_wins", "avg_sleep_min_clos_wins", "avg_mvpa_min_clos_wins", "avg_sedentary_min_clos_wins")
+
+cols_pred_sleeppivot_pct_wins <- c("avg_sleep_pct_clos_wins", "avg_mvpa_pct_clos_wins", "avg_sedentary_pct_clos_wins", "avg_light_pa_pct_clos_wins")
+cols_pred_sleeppivot_min_wins <- c("avg_sleep_min_clos_wins", "avg_mvpa_min_clos_wins", "avg_sedentary_min_clos_wins", "avg_light_pa_min_clos_wins")
+
+```
+
+## 4 set of ilrs 
+Setting up the data to create 4 pivot ilrs so that the first ilrs ilr1 = MVPA:all remaining, ilr2 = LPA:all remaining, ilr3 = SB:all remaining, and ilr4 = Sleep:all remaining.
+
+### Create sequential binary partition matrix
+```{r,include=TRUE}
+
+sbp4 = matrix(c( 1, -1, -1,-1, 
+                 0, 1, -1, -1,
+                 0, 0, 1, -1),
+              ncol=4, byrow=TRUE)
+
+psi4 = gsi.buildilrBase(t(sbp4))
+
+```
+
+### Raw
+#### ilrs MVPA
+```{r,include=TRUE}
+
+ilrs1 = ilr(acomp(all_data[, (cols_pred_mvpapivot_pct)]), V=psi4) # compute ilrs of all rows but only columns in cols_mvpapivot_pct
+head(ilrs1)
+
+# rename ilrs to ilr1, ilr2 and ilr3
+colnames(ilrs1) <- paste0("ilr_mvpa", 1:3)
+head(ilrs1)
+nrow(ilrs1)
+nrow(all_data) # Number of rows for ilrs and all_data_comp matches
+
+# Get ilrs means
+ilr_mean_pct_ilrs1 <- colMeans(ilrs1)
+ilr_mean_pct_ilrs1
+
+```
+
+#### ilrs LPA
+```{r,include=TRUE}
+
+ilrs2 = ilr(acomp(all_data[, (cols_pred_lpapivot_pct)]), V=psi4) # compute ilrs of all rows but only columns in cols_lpapivot_pct
+head(ilrs2)
+
+# rename ilrs to ilr1, ilr2 and ilr3
+colnames(ilrs2) <- paste0("ilr_lpa", 1:3)
+head(ilrs2)
+nrow(ilrs2)
+nrow(all_data) # Number of rows for ilrs and all_data_comp matches
+
+# Get ilrs means
+ilr_mean_pct_ilrs2 <- colMeans(ilrs2)
+ilr_mean_pct_ilrs2
+
+```
+
+#### ilrs SB
+```{r,include=TRUE}
+
+ilrs3 = ilr(acomp(all_data[, (cols_pred_sbpivot_pct)]), V=psi4) # compute ilrs of all rows but only columns in cols_sbpivot_pct
+head(ilrs3)
+
+# rename ilrs to ilr1, ilr2 and ilr3
+colnames(ilrs3) <- paste0("ilr_sb", 1:3)
+head(ilrs3)
+nrow(ilrs3)
+nrow(all_data) # Number of rows for ilrs and all_data_comp matches
+
+# Get ilrs means
+ilr_mean_pct_ilrs3 <- colMeans(ilrs3)
+ilr_mean_pct_ilrs3
+
+```
+
+#### ilrs Sleep
+```{r,include=TRUE}
+
+ilrs4 = ilr(acomp(all_data[, (cols_pred_sleeppivot_pct)]), V=psi4) # compute ilrs of all rows but only columns in cols_sleeppivot_pct
+head(ilrs4)
+
+# rename ilrs to ilr1, ilr2 and ilr3
+colnames(ilrs4) <- paste0("ilr_sleep", 1:3)
+head(ilrs4)
+nrow(ilrs4)
+nrow(all_data) # Number of rows for ilrs and all_data_comp matches
+
+# Get ilrs means
+ilr_mean_pct_ilrs4 <- colMeans(ilrs4)
+ilr_mean_pct_ilrs4
+
+```
+
+### Winsorized
+#### ilrs MVPA
+```{r,include=TRUE}
+
+ilrs1_wins = ilr(acomp(all_data[, (cols_pred_mvpapivot_pct_wins)]), V=psi4) # compute ilrs of all rows but only columns in cols_mvpapivot_pct_wins
+head(ilrs1_wins)
+
+# rename ilrs to ilr1, ilr2 and ilr3
+colnames(ilrs1_wins) <- paste0("ilr_mvpa_wins", 1:3)
+head(ilrs1_wins)
+nrow(ilrs1_wins)
+nrow(all_data) # Number of rows for ilrs and all_data_comp matches
+
+# Get ilrs means
+ilr_mean_pct_wins_ilrs1 <- colMeans(ilrs1_wins)
+ilr_mean_pct_wins_ilrs1
+
+```
+
+#### ilrs LPA
+```{r,include=TRUE}
+
+ilrs2_wins = ilr(acomp(all_data[, (cols_pred_lpapivot_pct_wins)]), V=psi4) # compute ilrs of all rows but only columns in cols_lpapivot_pct_wins
+head(ilrs2_wins)
+
+# rename ilrs to ilr1, ilr2 and ilr3
+colnames(ilrs2_wins) <- paste0("ilr_lpa_wins", 1:3)
+head(ilrs2_wins)
+nrow(ilrs2_wins)
+nrow(all_data) # Number of rows for ilrs and all_data_comp matches
+
+# Get ilrs means
+ilr_mean_pct_wins_ilrs2 <- colMeans(ilrs2_wins)
+ilr_mean_pct_wins_ilrs2
+
+```
+
+#### ilrs SB
+```{r,include=TRUE}
+
+ilrs3_wins = ilr(acomp(all_data[, (cols_pred_sbpivot_pct_wins)]), V=psi4) # compute ilrs of all rows but only columns in cols_sbpivot_pct_wins
+head(ilrs3_wins)
+
+# rename ilrs to ilr1, ilr2 and ilr3
+colnames(ilrs3_wins) <- paste0("ilr_sb_wins", 1:3)
+head(ilrs3_wins)
+nrow(ilrs3_wins)
+nrow(all_data) # Number of rows for ilrs and all_data_comp matches
+
+# Get ilrs means
+ilr_mean_pct_wins_ilrs3 <- colMeans(ilrs3_wins)
+ilr_mean_pct_wins_ilrs3
+
+```
+
+#### ilrs Sleep
+```{r,include=TRUE}
+
+ilrs4_wins = ilr(acomp(all_data[, (cols_pred_sleeppivot_pct_wins)]), V=psi4) # compute ilrs of all rows but only columns in cols_sleeppivot_pct_wins
+head(ilrs4_wins)
+
+# rename ilrs to ilr1, ilr2 and ilr3
+colnames(ilrs4_wins) <- paste0("ilr_sleep_wins", 1:3)
+head(ilrs4_wins)
+nrow(ilrs4_wins)
+nrow(all_data) # Number of rows for ilrs and all_data_comp matches
+
+# Get ilrs means
+ilr_mean_pct_wins_ilrs4 <- colMeans(ilrs4_wins)
+ilr_mean_pct_wins_ilrs4
+
+```
+
+### Create new dataframe containing the data to be used in the brain structure analysis and RVCI myelin analysis
+```{r message=FALSE}
+
+ilr4sets_data <- cbind(all_data, ilrs1, ilrs2, ilrs3, ilrs4, ilrs1_wins, ilrs2_wins, ilrs3_wins, ilrs4_wins) %>% 
+  rename_all( ~ str_replace(., "avg_", ""))
+
+#%>% 
+#  rename("ilr_mvpa_others" = "ilr1",
+#         "ilr_lpa_other" = "ilr2",
+#         "ilr_sb_others" = "ilr3",
+#         "ilr_sleep_others" = "ilr4")
+          
+# Save dataset for brain structure
+#write.xlsx(ilr4sets_data, "spreadsheets/all_data_4setilrs_20240404.xlsx")
+```
+
+# Loading older datasets (with DK Atlas) and merging with ILR data
+```{r, message=FALSE}
+
+# Load datasets with only brain outcomes
+brain_all_no_newids <- read.xlsx("../00.spreadsheets/all_data_clean_20231101.xlsx") %>% 
+  select(-c(2:25)) # keep only brain variables
+
+brain_rvci_with_newids <- read.xlsx("../00.spreadsheets/all_data_rvci_clean_20231116.xlsx") %>% 
+  select(-c(2:68)) # keep only brain variables of RVCI with new IDs
+
+## Join datasets to get a dataset with brain outcomes for all IDs (including new ones)
+brain_new_ids <- anti_join(brain_rvci_with_newids, brain_all_no_newids, by = "id")
+
+brain_all <- bind_rows(brain_all_no_newids, brain_new_ids)
+
+##### write.xlsx(brain_all, "../spreadsheets/brain_all_20231116.xlsx")
+
+# Join all data
+all_data <- inner_join(ilr4sets_data, brain_all, by = "id")
+
+# Another round assuring no overlapping participants
+overlapping_ptps <- read.xlsx("../00.spreadsheets/bt_fact_rvci_overlap.xlsx") %>% 
+  rename("id" = "RVCI")
+
+all_data_overlapcheck <- left_join(all_data, overlapping_ptps, by="id")
+
+# FACT_005 and RVCI_052 are overlaps, but FACT_005 has better MRI, so delete RVCI_052
+all_data_filtered <- all_data_overlapcheck %>% 
+  filter(id != "RVCI_052")
+
+all_data <- all_data_filtered %>% 
+  select(-c(156,157)) 
+
+```
+
+# Loading dataset Glasser Atlas
+```{r, message=FALSE}
+
+all_glasser <- read.xlsx("../00.spreadsheets/tabular_data_glasser_20231123.xlsx", check.names = FALSE)
+
+all_glasser <- all_glasser %>% 
+  rename("id" = "ID") %>% 
+  rename_with(~gsub("_\\?\\?\\?_", "_QUESTMARK_", .x), contains("_???_")) %>% 
+  rename_with(~gsub("-", "_", .x), contains("-"))
+
+
+all_data <- left_join(all_data, all_glasser, by = "id") %>% 
+  select(-c(70:519)) # deleting DK atlas regions and Glasser thickness
+```
+
+# Cleaning dataset
+```{r message=FALSE}
+
+all_data_gls <- all_data %>%
+  mutate(across(ends_with("_volume"), ~./1000)) %>%  # Convert all Glasser volumer to cm3
+  rename_with(~str_replace(., "_volume", "_volume_cm_gls"), ends_with("_volume")) %>% 
+  mutate(sex = as.factor(sex)) %>% 
+  select(-c(57:68)) # excluding the previously winsorized ilrs
+
+
+#write.xlsx(all_data_gls, "../00.spreadsheets/all_data_gls_20240920.xlsx")
+
+```
+
+## Checking for outliers
+```{r message=FALSE}
+
+## Histograms
+all_data_gls %>%
+  select(c("ilr_mvpa1","ilr_mvpa2","ilr_mvpa3","ilr_lpa1","ilr_lpa2","ilr_lpa3","ilr_sb1","ilr_sb2","ilr_sb3","ilr_sleep1","ilr_sleep2",
+           "ilr_sleep3")) %>%
+  pivot_longer(cols = 1:12, names_to = "measures", values_to = "data") %>%
+  ggplot(aes(data, fill = measures)) +
+  facet_wrap("measures", scale = "free") +
+  geom_histogram(colour = "black", binwidth = function(x) 2 * IQR(x) / (length(x)^(1/3))) + # Proportional bins
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# Checking outliers 
+mvpailr1_outliers <- check_outliers(all_data_gls$ilr_mvpa1, method = "iqr")
+mvpailr1_outliers # 2 outlier outside Q1-1.5xIQR or Q3+1.5xIQR: case 65 and 84.
+
+mvpailr2_outliers <- check_outliers(all_data_gls$ilr_mvpa2, method = "iqr")
+mvpailr2_outliers # 1 outlier outside Q1-1.5xIQR or Q3+1.5xIQR: case 26.
+
+mvpailr3_outliers <- check_outliers(all_data_gls$ilr_mvpa3, method = "iqr")
+mvpailr3_outliers # 1 outlier outside Q1-1.5xIQR or Q3+1.5xIQR: case 65.
+
+lpailr1_outliers <- check_outliers(all_data_gls$ilr_lpa1, method = "iqr")
+lpailr1_outliers # No outliers
+
+lpailr2_outliers <- check_outliers(all_data_gls$ilr_lpa2, method = "iqr")
+lpailr2_outliers # 2 outliers outside Q1-1.5xIQR or Q3+1.5xIQR: cases 65 and 103.
+
+lpailr3_outliers <- check_outliers(all_data_gls$ilr_lpa3, method = "iqr")
+lpailr3_outliers # 1 outlier outside Q1-1.5xIQR or Q3+1.5xIQR: case 65.
+
+sbilr1_outliers <- check_outliers(all_data_gls$ilr_sb1, method = "iqr")
+sbilr1_outliers # 1 outlier outside Q1-1.5xIQR or Q3+1.5xIQR: case 65.
+
+sbilr2_outliers <- check_outliers(all_data_gls$ilr_sb2, method = "iqr")
+sbilr2_outliers # No outliers.
+
+sbilr3_outliers <- check_outliers(all_data_gls$ilr_sb3, method = "iqr")
+sbilr3_outliers # 1 outlier outside Q1-1.5xIQR or Q3+1.5xIQR: case 65.
+
+sleepilr1_outliers <- check_outliers(all_data_gls$ilr_sleep1, method = "iqr")
+sleepilr1_outliers # 2 outliers outside Q1-1.5xIQR or Q3+1.5xIQR: cases 65, 103.
+
+sleepilr2_outliers <- check_outliers(all_data_gls$ilr_sleep2, method = "iqr")
+sleepilr2_outliers # 2 outliers outside Q1-1.5xIQR or Q3+1.5xIQR: cases 65, 84.
+
+sleepilr3_outliers <- check_outliers(all_data_gls$ilr_sleep3, method = "iqr")
+sleepilr3_outliers # 1 outlier outside Q1-1.5xIQR or Q3+1.5xIQR: cases 65.
+
+# Winsorizing outliers (didn't run yet)
+ilrs_wins <- all_data_gls
+
+for(var in c("ilr_mvpa1","ilr_mvpa2","ilr_mvpa3","ilr_lpa1","ilr_lpa2","ilr_lpa3","ilr_sb1","ilr_sb2","ilr_sb3","ilr_sleep1","ilr_sleep2",
+           "ilr_sleep3")){
+  Q <- quantile(ilrs_wins[[var]], probs=c(.05, .95), na.rm = TRUE)
+  Q1 <- quantile(ilrs_wins[[var]], probs=c(.25), na.rm = TRUE)
+  Q3 <- quantile(ilrs_wins[[var]], probs=c(.75), na.rm = TRUE)
+  iqr <- IQR(ilrs_wins[[var]], na.rm = TRUE)
+  
+  winsorized_var_name <- paste0(var, "_wins")
+  
+  ilrs_wins <- ilrs_wins %>%
+    mutate(!!winsorized_var_name := ifelse(.data[[var]] < (Q1 - 1.5*iqr), Q[1],
+                                ifelse(.data[[var]] > (Q3 + 1.5*iqr), Q[2], .data[[var]])))
+}
+
+## Checking distribution with winsorized data
+### Histograms
+ilrs_wins %>%
+  select("ilr_mvpa1_wins","ilr_mvpa2_wins","ilr_mvpa3_wins","ilr_lpa1_wins","ilr_lpa2_wins","ilr_lpa3_wins","ilr_sb1_wins","ilr_sb2_wins",
+         "ilr_sb3_wins","ilr_sleep1_wins","ilr_sleep2_wins", "ilr_sleep3_wins") %>%
+  pivot_longer(cols = 1:12, names_to = "measures", values_to = "data") %>%
+  ggplot(aes(data, fill = measures)) +
+  facet_wrap("measures", scale = "free") +
+  geom_histogram(colour = "black", binwidth = function(x) 2 * IQR(x) / (length(x)^(1/3))) + # Proportional bins
+  theme_minimal() +
+  theme(legend.position = "none") # All good now
+
+# Checking outliers 
+mvpailr1_wins_outliers <- check_outliers(ilrs_wins$ilr_mvpa1_wins, method = "iqr")
+mvpailr1_wins_outliers # 2 outlier outside Q1-1.5xIQR or Q3+1.5xIQR: case 65 and 84.
+
+mvpailr2_wins_outliers <- check_outliers(ilrs_wins$ilr_mvpa2_wins, method = "iqr")
+mvpailr2_wins_outliers # 1 outlier outside Q1-1.5xIQR or Q3+1.5xIQR: case 26.
+
+mvpailr3_wins_outliers <- check_outliers(ilrs_wins$ilr_mvpa3_wins, method = "iqr")
+mvpailr3_wins_outliers # 1 outlier outside Q1-1.5xIQR or Q3+1.5xIQR: case 65.
+
+lpailr1_wins_outliers <- check_outliers(ilrs_wins$ilr_lpa1_wins, method = "iqr")
+lpailr1_wins_outliers # No outliers
+
+lpailr2_wins_outliers <- check_outliers(ilrs_wins$ilr_lpa2_wins, method = "iqr")
+lpailr2_wins_outliers # 2 outliers outside Q1-1.5xIQR or Q3+1.5xIQR: cases 65 and 103.
+
+lpailr3_wins_outliers <- check_outliers(ilrs_wins$ilr_lpa3_wins, method = "iqr")
+lpailr3_wins_outliers # 1 outlier outside Q1-1.5xIQR or Q3+1.5xIQR: case 65.
+
+sbilr1_wins_outliers <- check_outliers(ilrs_wins$ilr_sb1_wins, method = "iqr")
+sbilr1_wins_outliers # 1 outlier outside Q1-1.5xIQR or Q3+1.5xIQR: case 65.
+
+sbilr2_wins_outliers <- check_outliers(ilrs_wins$ilr_sb2_wins, method = "iqr")
+sbilr2_wins_outliers # No outliers.
+
+sbilr3_wins_outliers <- check_outliers(ilrs_wins$ilr_sb3_wins, method = "iqr")
+sbilr3_wins_outliers # 1 outlier outside Q1-1.5xIQR or Q3+1.5xIQR: case 65.
+
+sleepilr1_wins_outliers <- check_outliers(ilrs_wins$ilr_sleep1_wins, method = "iqr")
+sleepilr1_wins_outliers # 2 outliers outside Q1-1.5xIQR or Q3+1.5xIQR: cases 65, 103.
+
+sleepilr2_wins_outliers <- check_outliers(ilrs_wins$ilr_sleep2_wins, method = "iqr")
+sleepilr2_wins_outliers # 2 outliers outside Q1-1.5xIQR or Q3+1.5xIQR: cases 65, 84.
+
+sleepilr3_wins_outliers <- check_outliers(ilrs_wins$ilr_sleep3_wins, method = "iqr")
+sleepilr3_wins_outliers # 1 outlier outside Q1-1.5xIQR or Q3+1.5xIQR: cases 65.
+
+# Dataset with only wins ilrs
+all_data_gls <- ilrs_wins
+
+```
+
+### Descriptives
+#### Demographics
+##### Raw
+```{r, message=FALSE}
+
+kable(print(printToggle = FALSE, CreateTableOne(data = all_data_gls, 
+                                                c("age","sex","bmi",
+                                                  "moca", 
+                                                  "mmse",
+                                                  "education",
+                                                  "sleep_min_clos",
+                                                  "sleep_pct_clos",
+                                                  "sedentary_min_clos", 
+                                                  "sedentary_pct_clos",
+                                                  "light_pa_min_clos",
+                                                  "light_pa_pct_clos",
+                                                  "mvpa_min_clos",
+                                                  "mvpa_pct_clos",
+                                                  "adas_cog_plus"), strata = "rct",
+                                                  includeNA = TRUE, addOverall = TRUE)))
+
+```
+
+#### Ternary plot
+##### Raw
+```{r, message=FALSE}
+
+all_data_gls <- all_data_gls %>% 
+  mutate(totalpa_pct_clo = light_pa_pct_clos + mvpa_pct_clos) %>% 
+  relocate(totalpa_pct_clo, .after = mvpa_pct_clos)
+
+#write.xlsx(all_data_gls, "../00.spreadsheets/all_data_gls_20240920.xlsx")
+
+comp_data_a <-  all_data_gls[, c("totalpa_pct_clo", "sleep_pct_clos", "sedentary_pct_clos")]
+
+colMeans(comp_data_a)
+
+mean_values_a <- data.frame(totalpa_pct_clo = 27.77857,
+  sleep_pct_clos = 29.03979,
+  sedentary_pct_clos = 43.18163)
+
+g1 <- ggtern(data = all_data_gls, aes(x = sedentary_pct_clos, y = totalpa_pct_clo, z = sleep_pct_clos)) + 
+  geom_point(data = all_data_gls, alpha = 0.5, color = 'gray', size = 1.5) +
+  geom_crosshair_tern(data = mean_values_a, lty = 2, size = 1) +
+  theme_rgbw(30) + 
+  theme_nomask() +
+  geom_confidence_tern(breaks = 0.75, color = "black", alpha = 0.5) +
+  geom_confidence_tern(breaks = 0.95, color = "black", alpha = 0.6) +
+  geom_confidence_tern(breaks = 0.99, color = "black", alpha = 0.7) +
+    annotate(geom  = 'text',
+             size = 6,
+                x     = 1 + 0.3,
+                y     = 1 + 0.4,
+                z     = 0 - 0.06,
+                vjust = c(-0.4),
+                hjust = c(0.75),
+                angle = c(-0),
+                label = paste("SB=43%")) +
+  annotate(geom  = 'text',
+           size = 6,
+           x     = 0,
+           y     = 0.25,
+           z     = 1-0.35,
+           vjust = c(1.25),
+           hjust = c(-0.25),
+           angle = c(0),
+           label = paste("PA=28%")) +
+  annotate(geom  = 'text',
+           size = 6,
+           x     = 1-0.08, 
+           y     = 0,
+           z     = 0.4,
+           vjust = c(3),
+           hjust = c(0.7),
+           label = paste("Sleep=29%")) + 
+  theme(legend.position = 'left',
+        axis.title = element_text(size = 24),
+        plot.margin = unit(c(1,1,1,1), "lines")) + # Adjust the margin size as needed 
+  labs(title = '(A)',Tarrow = "% Total PA",Larrow = "% Sedentary",Rarrow = "% Sleep",
+       x="SB", y="Total PA", z="Sleep") +
+  coord_tern()
+g1
+
+
+comp_data_b <- all_data_gls[, c("mvpa_pct_clos", "sleep_pct_clos", "sedentary_pct_clos")]
+colMeans(comp_data_b)
+mean_values_b <- data.frame(mvpa_pct_clos = 7.327529,
+  sleep_pct_clos = 29.039791,
+  sedentary_pct_clos = 43.181634)
+
+g2 <- ggtern(data = all_data_gls, aes(x = sedentary_pct_clos, y = sleep_pct_clos, z = mvpa_pct_clos)) + 
+  geom_point(data = all_data_gls, alpha = 0.5, color = 'gray', size = 1.5) +
+  theme_rgbw(base_size = 18) + 
+  theme_nomask() +
+  geom_confidence_tern(breaks = 0.75, color = "black", alpha = 0.5) +
+  geom_confidence_tern(breaks = 0.95, color = "black", alpha = 0.6) +
+  geom_confidence_tern(breaks = 0.99, color = "black", alpha = 0.7) +
+  theme(legend.position = 'left',
+        axis.title = element_text(size = 14),
+        plot.margin = unit(c(1,1,1,1), "lines"),
+        tern.axis.title.R = element_text(hjust = 0.65)) + # Adjust the margin size as needed 
+  labs(title = '(B)',Tarrow = "% Sleep",Larrow = "% Sedentary",Rarrow = "% MVPA",
+       x="SB", y="Sleep", z="MVPA") +
+  coord_tern()
+g2
+
+comp_data_c <- all_data_gls[, c("mvpa_pct_clos", "light_pa_pct_clos", "sedentary_pct_clos")]
+colMeans(comp_data_c)
+mean_values_c <- data.frame(mvpa_pct_clos = 7.327529,
+  light_pa_pct_clos = 20.451046,
+  sedentary_pct_clos = 43.181634)
+
+g3 <- ggtern(data = all_data_gls, aes(x = sedentary_pct_clos, y = light_pa_pct_clos, z = mvpa_pct_clos)) + 
+  geom_point(data = all_data_gls, alpha = 0.5, color = 'gray', size = 1.5) +
+  theme_rgbw(base_size = 18) + 
+  theme_nomask() +
+  geom_confidence_tern(breaks = 0.75, color = "black", alpha = 0.5) +
+  geom_confidence_tern(breaks = 0.95, color = "black", alpha = 0.6) +
+  geom_confidence_tern(breaks = 0.99, color = "black", alpha = 0.7) +
+  theme(legend.position = 'left',
+        axis.title = element_text(size = 14),
+        plot.margin = unit(c(1,1,1,1), "lines"),
+        tern.axis.title.R = element_text(hjust = 0.65)) + # Adjust the margin size as needed 
+  labs(title = '(C)',Tarrow = "% Light PA",Larrow = "% Sedentary",Rarrow = "% MVPA",
+       x="SB", y="Light PA", z="MVPA")+
+  coord_tern()
+g3
+
+comp_data_d <- all_data_gls[, c("mvpa_pct_clos", "light_pa_pct_clos", "sleep_pct_clos")]
+colMeans(comp_data_d)
+mean_values_d <- data.frame(mvpa_pct_clos = 7.327529,
+  light_pa_pct_clos = 20.451046,
+  sleep_pct_clos = 29.039791)
+
+g4 <- ggtern(data = all_data_gls, aes(x = sleep_pct_clos, y = light_pa_pct_clos, z = mvpa_pct_clos)) + 
+  geom_point(data = all_data_gls, alpha = 0.5, color = 'gray', size = 1.5) +
+  theme_rgbw(base_size = 18) + 
+  theme_nomask() +
+  geom_confidence_tern(breaks = 0.75, color = "black", alpha = 0.5) +
+  geom_confidence_tern(breaks = 0.95, color = "black", alpha = 0.6) +
+  geom_confidence_tern(breaks = 0.99, color = "black", alpha = 0.7) +
+  theme(legend.position = 'left',
+        axis.title = element_text(size = 14),
+        plot.margin = unit(c(1,1,1,1), "lines"),
+        tern.axis.title.R = element_text(hjust = 0.65),
+        tern.axis.title.L = element_text(hjust = 0.2)) + # Adjust the margin size as needed 
+  labs(title = '(D)',Tarrow = "% Light PA",Larrow = "% Sleep",Rarrow = "% MVPA",
+       x="Sleep", y="Light PA", z="MVPA") +
+  coord_tern()
+g4
+
+# Arrange all plots in a single figure
+## Adjust the layout_matrix
+layout_matrix <- rbind(
+  c(1, 1, 2),
+  c(1, 1, 3),
+  c(1, 1, 4)
+)
+
+## Use grid.arrange with the layout_matrix
+tern_plot <- grid.arrange(g1, g2, g3, g4, layout_matrix = layout_matrix)
+
+ggsave(plot = tern_plot, "../04.figures/tern_plot_20240920.tiff", dpi = 300, height = 13, width = 18)
+```
+
+#### Variation matrix
+##### Raw
+```{r, message=FALSE}
+
+comp_data <-  all_data_gls %>% 
+  dplyr::select("sleep_pct_clos", "sedentary_pct_clos", "light_pa_pct_clos", "mvpa_pct_clos")
+
+comps <- acomp(comp_data)
+print(comps)
+meanCol(comps)
+plot(comps)
+
+variation(acomp(comps))
+```
+
+## Linear models - Glasser Atlas
+### Cortical volume ~ ILR
+#### Creating dataset
+```{r, message=FALSE}
+regions_vol_gls <- all_data_gls %>% 
+  select(ends_with("volume_cm_gls")) %>% 
+  names()
+```
+
+##### 24HAC overall compositions
+```{r, message=FALSE}
+overallcomp_lhrh_vol_gls_lm = list()
+
+# Run models in loop script
+for (var in regions_vol_gls){
+# Formula
+form <- paste(var, "~ cbind(ilr_mvpa1,ilr_mvpa2,ilr_mvpa3) + age + education + sex + rct + eicv", sep = "")
+
+# Print results to the list
+overallcomp_lhrh_vol_gls_lm[var] <- list(lm(form,
+data = all_data_gls))
+}
+
+overallcomp_lhrh_vol_gls_results = list()
+
+for (model in overallcomp_lhrh_vol_gls_lm){
+output <- summary(model)$coefficients[,4] %>% as.data.frame() %>%
+rownames_to_column() %>% 
+rename(predictor = 1, pvalue = 2) %>% 
+slice(2)
+output$estimate <- summary(model)$coefficients[2, 1]
+output$label <- model$term[[2]] %>% as.character()
+overallcomp_lhrh_vol_gls_results <- rbind(overallcomp_lhrh_vol_gls_results, output)
+}
+
+# Uncorrected
+overallcomp_lhrh_vol_gls_results_lm_unc <- overallcomp_lhrh_vol_gls_results %>% 
+  mutate(fdr = p.adjust(pvalue, method = "BH")) %>% 
+  filter(pvalue <= 0.05) %>% 
+  arrange(fdr)
+overallcomp_lhrh_vol_gls_results_lm_unc
+
+
+# FDR-adjusted
+overallcomp_lhrh_vol_gls_lm_fdr <- overallcomp_lhrh_vol_gls_results %>% 
+  mutate(fdr = p.adjust(pvalue, method = "BH")) %>% 
+  filter(fdr <= 0.05)
+overallcomp_lhrh_vol_gls_lm_fdr
+
+```
+
+##### MVPA
+```{r, message=FALSE}
+mvpa_lhrh_vol_gls_lm = list()
+
+# Run models in loop script
+for (var in regions_vol_gls){
+# Formula
+form <- paste(var, "~ ilr_mvpa1 + age + education + sex + rct + eicv", sep = "")
+
+# Print results to the list
+mvpa_lhrh_vol_gls_lm[var] <- list(lm(form,
+data = all_data_gls))
+}
+
+mvpa_lhrh_vol_gls_results = list()
+
+for (model in mvpa_lhrh_vol_gls_lm){
+output <- summary(model)$coefficients[,4] %>% as.data.frame() %>%
+rownames_to_column() %>% 
+rename(predictor = 1, pvalue = 2) %>% 
+slice(2)
+output$estimate <- summary(model)$coefficients[2, 1]
+output$label <- model$term[[2]] %>% as.character()
+mvpa_lhrh_vol_gls_results <- rbind(mvpa_lhrh_vol_gls_results, output)
+}
+
+# Uncorrected
+mvpa_lhrh_vol_gls_unc_results <- mvpa_lhrh_vol_gls_results %>% 
+  mutate(fdr = p.adjust(pvalue, method = "BH")) %>% 
+  filter(pvalue <= 0.05) %>% 
+  arrange(fdr)
+mvpa_lhrh_vol_gls_unc_results
+
+# FDR-adjusted
+mvpa_lhrh_vol_gls_results_fdr <- mvpa_lhrh_vol_gls_results %>% 
+  mutate(fdr = p.adjust(pvalue, method = "BH")) %>% 
+  filter(fdr <= 0.05)
+mvpa_lhrh_vol_gls_results_fdr
+
+# Checking model fit
+#check_model(mvpa_lhrh_vol_gls_lm[["rh_R_TE2a_ROI_volume_cm_gls"]])
+Anova(mvpa_lhrh_vol_gls_lm[["rh_R_TE2a_ROI_volume_cm_gls"]], type=2)
+confint(mvpa_lhrh_vol_gls_lm[["rh_R_TE2a_ROI_volume_cm_gls"]], type=2)
+```
+
+##### Light PA
+```{r, message=FALSE}
+lightpa_lhrh_vol_gls_lm = list()
+
+# Run models in loop script
+for (var in regions_vol_gls){
+# Formula
+form <- paste(var, "~ ilr_lpa1 + age + education + sex + rct + eicv", sep = "")
+
+# Print results to the list
+lightpa_lhrh_vol_gls_lm[var] <- list(lm(form,
+ data = all_data_gls))
+}
+
+lightpa_lhrh_vol_gls_results = list()
+
+for (model in lightpa_lhrh_vol_gls_lm){
+output <- summary(model)$coefficients[,4] %>% as.data.frame() %>%
+rownames_to_column() %>% 
+rename(predictor = 1, pvalue = 2) %>% 
+slice(2)
+output$estimate <- summary(model)$coefficients[2, 1]
+output$label <- model$term[[2]] %>% as.character()
+lightpa_lhrh_vol_gls_results <- rbind(lightpa_lhrh_vol_gls_results, output)
+}
+
+# Uncorrected
+lightpa_lhrh_vol_gls_results_unc <- lightpa_lhrh_vol_gls_results %>% 
+  mutate(fdr = p.adjust(pvalue, method = "BH")) %>% 
+  filter(pvalue <= 0.05) %>% 
+  arrange(fdr)
+lightpa_lhrh_vol_gls_results_unc
+
+# FDR-adjusted
+lightpa_lhrh_vol_gls_results_fdr <- lightpa_lhrh_vol_gls_results %>% 
+  mutate(fdr = p.adjust(pvalue, method = "BH")) %>% 
+  filter(fdr <= 0.05)
+lightpa_lhrh_vol_gls_results_fdr
+
+
+```
+
+##### SB
+```{r, message=FALSE}
+sb_lhrh_vol_gls_lm = list()
+
+# Run models in loop script
+for (var in regions_vol_gls){
+# Formula
+form <- paste(var, "~ ilr_sb1 + age + education + sex + rct + eicv", sep = "")
+
+# Print results to the list
+sb_lhrh_vol_gls_lm[var] <- list(lm(form,
+ data = all_data_gls))
+}
+
+sb_lhrh_vol_gls_results = list()
+
+for (model in sb_lhrh_vol_gls_lm){
+output <- summary(model)$coefficients[,4] %>% as.data.frame() %>%
+rownames_to_column() %>% 
+rename(predictor = 1, pvalue = 2) %>% 
+slice(2)
+output$estimate <- summary(model)$coefficients[2, 1]
+output$label <- model$term[[2]] %>% as.character()
+sb_lhrh_vol_gls_results <- rbind(sb_lhrh_vol_gls_results, output)
+}
+
+# Uncorrected
+sb_lhrh_vol_gls_results_unc <- sb_lhrh_vol_gls_results %>% 
+  mutate(fdr = p.adjust(pvalue, method = "BH")) %>% 
+  filter(pvalue <= 0.05) %>% 
+  arrange(fdr)
+sb_lhrh_vol_gls_results_unc
+
+# FDR
+sb_lhrh_vol_gls_results_fdr <- sb_lhrh_vol_gls_results %>% 
+  mutate(fdr = p.adjust(pvalue, method = "BH")) %>% 
+  filter(fdr <= 0.05)
+sb_lhrh_vol_gls_results_fdr
+
+# Checking model fit
+#check_model(sb_lhrh_vol_gls_lm[["rh_R_TE2a_ROI_volume_cm_gls"]])
+Anova(sb_lhrh_vol_gls_lm[["rh_R_TE2a_ROI_volume_cm_gls"]], type=2)
+confint(sb_lhrh_vol_gls_lm[["rh_R_TE2a_ROI_volume_cm_gls"]], type=2)
+```
+
+##### Sleep
+```{r, message=FALSE}
+sleep_lhrh_vol_gls_lm = list()
+
+# Run models in loop script
+for (var in regions_vol_gls){
+# Formula
+form <- paste(var, "~ ilr_sleep1 + age + education + sex + rct + eicv", sep = "")
+
+# Print results to the list
+sleep_lhrh_vol_gls_lm[var] <- list(lm(form,
+ data = all_data_gls))
+}
+
+sleep_lhrh_vol_gls_results = list()
+
+for (model in sleep_lhrh_vol_gls_lm){
+output <- summary(model)$coefficients[,4] %>% as.data.frame() %>%
+rownames_to_column() %>% 
+rename(predictor = 1, pvalue = 2) %>% 
+slice(2)
+output$estimate <- summary(model)$coefficients[2, 1]
+output$label <- model$term[[2]] %>% as.character()
+sleep_lhrh_vol_gls_results <- rbind(sleep_lhrh_vol_gls_results, output)
+}
+
+# Uncorrected
+sleep_lhrh_vol_gls_results_unc <- sleep_lhrh_vol_gls_results %>% 
+  mutate(fdr = p.adjust(pvalue, method = "BH")) %>% 
+  filter(pvalue <= 0.05) %>% 
+  arrange(fdr)
+sleep_lhrh_vol_gls_results_unc
+
+```
+
+#### Merging results from Glasser models
+```{r message=FALSE}
+
+lhrh_vol_gls_results <- rbind(mvpa_lhrh_vol_gls_results, lightpa_lhrh_vol_gls_results, sb_lhrh_vol_gls_results, sleep_lhrh_vol_gls_results)
+
+lhrh_vol_gls_results %>% 
+  group_by(predictor) %>% 
+  mutate(fdr = p.adjust(pvalue, method = "BH")) %>% 
+  filter(pvalue <= 0.05) %>% 
+  arrange(fdr) %>% 
+  ungroup() %>% 
+  print(n = 80)
+
+lhrh_vol_gls_results_sig <- lhrh_vol_gls_results %>% 
+  group_by(predictor) %>% 
+  mutate(fdr = p.adjust(pvalue, method = "BH")) %>% 
+  filter(pvalue <= 0.05) %>% 
+  arrange(fdr) %>% 
+  relocate("fdr", .after = pvalue) %>% 
+  ungroup()
+
+lhrh_vol_gls_results_fdr_sig <- lhrh_vol_gls_results %>% 
+  group_by(predictor) %>% 
+  mutate(fdr = p.adjust(pvalue, method = "BH")) %>% 
+  filter(fdr <= 0.05) %>% 
+  relocate("fdr", .after = pvalue) %>% 
+  ungroup()
+lhrh_vol_gls_results_fdr_sig
+
+#write.xlsx(lhrh_vol_gls_results_sig, "vol_gls_results_sig.xlsx")
+
+```
+
+#### Plotting - Volume results
+##### Uncorrected
+```{r, message=FALSE}
+# MVPA
+## Clean data
+ mvpa_lhrh_vol_gls_results_unc_clean <- mvpa_lhrh_vol_gls_unc_results %>% 
+  mutate(hemi = ifelse(str_detect(label, "lh_"), "left",
+                ifelse(str_detect(label, "rh_"), "right",
+                NA)),
+         label = str_trim(label),
+         label = str_remove(label, "_ROI_volume"),
+         region = str_remove(label, "lh_L_|rh_R_|_volume")) %>%
+  mutate(label = str_replace_all(label, "_cm_gls", ""),
+         region = str_replace_all(region, "_cm_gls", ""),
+         region = str_replace_all(region, "_", "-"),
+         label = ifelse(str_detect(label, "rh_R_9_46d"), "rh_R_9-46d", label)) %>% 
+  filter(region != "rh-QUESTMARK" & label != "rh_QUESTMARK_volume") %>% 
+  filter(region != "lh-QUESTMARK" & label != "lh_QUESTMARK_volume") %>% 
+  select(estimate, region, hemi, label)
+
+### Plot
+mvpa_lhrh_vol_gls_results_unc_clean %>% 
+  ggplot() +
+  geom_brain(atlas = glasser,
+             position = position_brain(hemi ~ side),
+             aes(fill = estimate), colour = "grey80") +
+  scale_fill_viridis(na.value = "grey90", option = "plasma") +
+  theme_void()
+
+mvpa_unc_plot <- mvpa_lhrh_vol_gls_results_unc_clean %>% 
+  brain_join(glasser) %>% 
+  reposition_brain(hemi ~ side) %>% 
+  ggplot(aes(fill = estimate), colour = "grey80") + # Change line colour
+  geom_sf() + 
+  scale_fill_viridis(na.value = "grey90", # Change background grey colour
+                     option = "plasma", 
+                     direction = 1, 
+                     limits = c(-0.5, 0.5), # Change limits here
+                     name = "Model estimates") +
+  geom_label_repel(
+    aes(label = ifelse(!is.na(estimate), region, NA), 
+        geometry = geometry),
+    stat = "sf_coordinates",
+    min.segment.length = 0,
+    box.padding = 0.6, 
+    label.size = NA, fill = NA,
+    force = 0.5, fontface = "bold",
+    fill = "grey60",
+    size = 3, 
+    seed = 123) +
+  theme_void() +
+  theme(legend.position = "bottom",
+        legend.direction = "horizontal",
+        legend.title = element_text(hjust = 0.5, size = 14),
+        legend.title.position = "top",
+        legend.key.width = unit(2, "cm") ,
+        legend.key.height = unit(0.8, "cm"),
+        legend.text = element_text(size = 12))
+mvpa_unc_plot
+
+mvpa_unc_plot <- mvpa_unc_plot + 
+  annotate("text", x = 1, y = 540, label = "(A)", size = 5, fontface = "bold") +
+  annotate("text", x = 330, y = 540, label = "Moderate-to-vigorous physical activity", size = 5, fontface = "bold") +
+  annotate("text", x = 80, y = 480, label = "P", size = 5, fontface = "bold") +
+  annotate("text", x = 160, y = 480, label = "A", size = 5, fontface = "bold") +
+  annotate("segment", x = 90, xend = 150, y = 480, yend = 480, arrow = arrow(type = "closed", ends = "last", length = unit(0.1, "inches")), linewidth = 1) +
+  annotate("text", x = 330, y = 500, label = "RH", size = 5, fontface = "bold") +
+  annotate("text", x = 480, y = 480, label = "A", size = 5, fontface = "bold") +
+  annotate("text", x = 560, y = 480, label = "P", size = 5, fontface = "bold") +
+  annotate("segment", x = 490, xend = 550, y = 480, yend = 480, arrow = arrow(type = "closed", ends = "last", length = unit(0.1, "inches")), linewidth = 1) +
+  annotate("text", x = 330, y = 1, label = "LH", size = 5, fontface = "bold") +
+  annotate("text", x = 80, y = -20, label = "A", size = 5, fontface = "bold") +
+  annotate("text", x = 160, y = -20, label = "P", size = 5, fontface = "bold") +
+  annotate("segment", x = 90, xend = 150, y = -20, yend = -20, arrow = arrow(type = "closed", ends = "last", length = unit(0.1, "inches")), linewidth = 1) +
+  annotate("text", x = 560, y = -20, label = "A", size = 5, fontface = "bold") +
+  annotate("text", x = 480, y = -20, label = "P", size = 5, fontface = "bold") +
+  annotate("segment", x = 490, xend = 550, y = -20, yend = -20, arrow = arrow(type = "closed", ends = "last", length = unit(0.1, "inches")), linewidth = 1)
+
+mvpa_unc_plot
+
+#ggsave("../04.figures/mvpa_unc_plot.tiff", plot = mvpa_unc_plot, width = 8, height = 6, dpi = 300)
+
+# Light PA
+## Clean data
+lightpa_lhrh_vol_gls_results_unc_clean <- lightpa_lhrh_vol_gls_results_unc %>% 
+  mutate(hemi = ifelse(str_detect(label, "lh_"), "left",
+                ifelse(str_detect(label, "rh_"), "right",
+                NA)),
+         label = str_trim(label),
+         label = str_remove(label, "_ROI_volume"),
+         region = str_remove(label, "lh_L_|rh_R_|_volume")) %>%
+  mutate(label = str_replace_all(label, "_cm_gls", ""),
+         region = str_replace_all(region, "_cm_gls", ""),
+         region = str_replace_all(region, "_", "-")) %>% 
+  filter(region != "rh-QUESTMARK" & label != "rh_QUESTMARK_volume") %>% 
+  filter(region != "lh-QUESTMARK" & label != "lh_QUESTMARK_volume") %>% 
+  select(estimate, region, hemi, label)
+
+### Plot
+lightpa_lhrh_vol_gls_results_unc_clean %>% 
+  ggplot() +
+  geom_brain(atlas = glasser,
+             position = position_brain(hemi ~ side),
+             aes(fill = estimate), colour = "grey80") +
+  scale_fill_viridis(na.value = "grey90", option = "plasma") +
+  theme_void()
+
+lpa_unc_plot <- lightpa_lhrh_vol_gls_results_unc_clean %>% 
+  brain_join(glasser) %>% 
+  reposition_brain(hemi ~ side) %>% 
+  ggplot(aes(fill = estimate), colour = "grey80") + # Change line colour
+  geom_sf() + 
+  scale_fill_viridis(na.value = "grey90", # Change background grey colour
+                     option = "plasma", 
+                     direction = 1, 
+                     limits = c(-0.5, 0.5), # Change limits here
+                     name = "Model estimates") +
+  geom_label_repel(
+    aes(label = ifelse(!is.na(estimate), region, NA), 
+        geometry = geometry),
+    stat = "sf_coordinates",
+    min.segment.length = 0,
+    box.padding = 0.6, 
+    label.size = NA, fill = NA,
+    force = 0.5, fontface = "bold",
+    fill = "grey60",
+    size = 3, 
+    seed = 123) +
+  theme_void() +
+  theme(legend.position = "bottom",
+        legend.direction = "horizontal",
+        legend.title = element_text(hjust = 0.5, size = 14),
+        legend.title.position = "top",
+        legend.key.width = unit(2, "cm") ,
+        legend.key.height = unit(0.8, "cm"),
+        legend.text = element_text(size = 12))
+
+lpa_unc_plot <- lpa_unc_plot + 
+  annotate("text", x = 1, y = 540, label = "(B)", size = 5, fontface = "bold") +
+  annotate("text", x = 330, y = 540, label = "Light physical activity", size = 5, fontface = "bold") +
+  annotate("text", x = 80, y = 480, label = "P", size = 5, fontface = "bold") +
+  annotate("text", x = 160, y = 480, label = "A", size = 5, fontface = "bold") +
+  annotate("segment", x = 90, xend = 150, y = 480, yend = 480, arrow = arrow(type = "closed", ends = "last", length = unit(0.1, "inches")), linewidth = 1) +
+  annotate("text", x = 330, y = 500, label = "RH", size = 5, fontface = "bold") +
+  annotate("text", x = 480, y = 480, label = "A", size = 5, fontface = "bold") +
+  annotate("text", x = 560, y = 480, label = "P", size = 5, fontface = "bold") +
+  annotate("segment", x = 490, xend = 550, y = 480, yend = 480, arrow = arrow(type = "closed", ends = "last", length = unit(0.1, "inches")), linewidth = 1) +
+  annotate("text", x = 330, y = 1, label = "LH", size = 5, fontface = "bold") +
+  annotate("text", x = 80, y = -20, label = "A", size = 5, fontface = "bold") +
+  annotate("text", x = 160, y = -20, label = "P", size = 5, fontface = "bold") +
+  annotate("segment", x = 90, xend = 150, y = -20, yend = -20, arrow = arrow(type = "closed", ends = "last", length = unit(0.1, "inches")), linewidth = 1) +
+  annotate("text", x = 560, y = -20, label = "A", size = 5, fontface = "bold") +
+  annotate("text", x = 480, y = -20, label = "P", size = 5, fontface = "bold") +
+  annotate("segment", x = 490, xend = 550, y = -20, yend = -20, arrow = arrow(type = "closed", ends = "last", length = unit(0.1, "inches")), linewidth = 1)
+
+lpa_unc_plot
+
+#ggsave("04.figures/lpa_unc_plot.tiff", plot = lpa_unc_plot, width = 8, height = 6, dpi = 300)
+
+# Sedentary behaviour
+## Clean data
+sb_lhrh_vol_gls_results_unc_clean <- sb_lhrh_vol_gls_results_unc %>% 
+  mutate(hemi = ifelse(str_detect(label, "lh_"), "left",
+                ifelse(str_detect(label, "rh_"), "right",
+                NA)),
+         label = str_trim(label),
+         label = str_remove(label, "_ROI_volume"),
+         region = str_remove(label, "lh_L_|rh_R_|_volume")) %>%
+  mutate(label = str_replace_all(label, "_cm_gls", ""),
+         region = str_replace_all(region, "_cm_gls", ""),
+         region = str_replace_all(region, "_", "-")) %>% 
+  filter(region != "rh-QUESTMARK" & label != "rh_QUESTMARK_volume") %>% 
+  filter(region != "lh-QUESTMARK" & label != "lh_QUESTMARK_volume") %>% 
+  select(estimate, region, hemi, label)
+
+### Plot
+sb_lhrh_vol_gls_results_unc_clean %>% 
+  ggplot() +
+  geom_brain(atlas = glasser,
+             position = position_brain(hemi ~ side),
+             aes(fill = estimate), colour = "grey80") +
+  scale_fill_viridis(na.value = "grey90", option = "plasma") +
+  theme_void()
+
+sb_unc_plot <- sb_lhrh_vol_gls_results_unc_clean %>% 
+  brain_join(glasser) %>% 
+  reposition_brain(hemi ~ side) %>% 
+  ggplot(aes(fill = estimate), colour = "grey80") + # Change line colour
+  geom_sf() + 
+  scale_fill_viridis(na.value = "grey90", # Change background grey colour
+                     option = "plasma", 
+                     direction = 1, 
+                     limits = c(-0.5, 0.5), # Change limits here
+                     name = "Model estimates") +
+  geom_label_repel(
+    aes(label = ifelse(!is.na(estimate), region, NA), 
+        geometry = geometry),
+    stat = "sf_coordinates",
+    min.segment.length = 0,
+    box.padding = 0.6, 
+    label.size = NA, fill = NA,
+    force = 0.5, fontface = "bold",
+    fill = "grey60",
+    size = 3, 
+    seed = 123) +
+  theme_void() +
+  theme(legend.position = "bottom",
+        legend.direction = "horizontal",
+        legend.title = element_text(hjust = 0.5, size = 14),
+        legend.title.position = "top",
+        legend.key.width = unit(2, "cm") ,
+        legend.key.height = unit(0.8, "cm"),
+        legend.text = element_text(size = 12))
+
+sb_unc_plot <- sb_unc_plot + 
+  annotate("text", x = 1, y = 540, label = "(C)", size = 5, fontface = "bold") +
+  annotate("text", x = 330, y = 540, label = "Sedentary behavior", size = 5, fontface = "bold") +
+  annotate("text", x = 80, y = 480, label = "P", size = 5, fontface = "bold") +
+  annotate("text", x = 160, y = 480, label = "A", size = 5, fontface = "bold") +
+  annotate("segment", x = 90, xend = 150, y = 480, yend = 480, arrow = arrow(type = "closed", ends = "last", length = unit(0.1, "inches")), linewidth = 1) +
+  annotate("text", x = 330, y = 500, label = "RH", size = 5, fontface = "bold") +
+  annotate("text", x = 480, y = 480, label = "A", size = 5, fontface = "bold") +
+  annotate("text", x = 560, y = 480, label = "P", size = 5, fontface = "bold") +
+  annotate("segment", x = 490, xend = 550, y = 480, yend = 480, arrow = arrow(type = "closed", ends = "last", length = unit(0.1, "inches")), linewidth = 1) +
+  annotate("text", x = 330, y = 1, label = "LH", size = 5, fontface = "bold") +
+  annotate("text", x = 80, y = -20, label = "A", size = 5, fontface = "bold") +
+  annotate("text", x = 160, y = -20, label = "P", size = 5, fontface = "bold") +
+  annotate("segment", x = 90, xend = 150, y = -20, yend = -20, arrow = arrow(type = "closed", ends = "last", length = unit(0.1, "inches")), linewidth = 1) +
+  annotate("text", x = 560, y = -20, label = "A", size = 5, fontface = "bold") +
+  annotate("text", x = 480, y = -20, label = "P", size = 5, fontface = "bold") +
+  annotate("segment", x = 490, xend = 550, y = -20, yend = -20, arrow = arrow(type = "closed", ends = "last", length = unit(0.1, "inches")), linewidth = 1)
+
+sb_unc_plot
+
+#ggsave("../04.figures/sb_unc_plot.tiff", plot = sb_unc_plot, width = 8, height = 6, dpi = 300)
+
+# Sleep
+## Clean data
+sleep_lhrh_vol_gls_results_unc_clean <- sleep_lhrh_vol_gls_results_unc %>% 
+  mutate(hemi = ifelse(str_detect(label, "lh_"), "left",
+                ifelse(str_detect(label, "rh_"), "right",
+                NA)),
+         label = str_trim(label),
+         label = str_remove(label, "_ROI_volume"),
+         region = str_remove(label, "lh_L_|rh_R_|_volume")) %>%
+  mutate(label = str_replace_all(label, "_cm_gls", ""),
+         region = str_replace_all(region, "_cm_gls", ""),
+         region = str_replace_all(region, "_", "-"),
+         label = ifelse(str_detect(label, "lh_L_9_46d"), "lh_L_9-46d", label),
+         label = ifelse(str_detect(label, "rh_R_9_46d"), "rh_R_9-46d", label)) %>% 
+  filter(region != "rh-QUESTMARK" & label != "rh_QUESTMARK_volume") %>% 
+  filter(region != "lh-QUESTMARK" & label != "lh_QUESTMARK_volume") %>% 
+  select(estimate, region, hemi, label)
+
+### Plot
+sleep_lhrh_vol_gls_results_unc_clean %>% 
+  ggplot() +
+  geom_brain(atlas = glasser,
+             position = position_brain(hemi ~ side),
+             aes(fill = estimate), colour = "grey80") +
+  scale_fill_viridis(na.value = "grey90", option = "plasma") +
+  theme_void()
+
+sleep_unc_plot <- sleep_lhrh_vol_gls_results_unc_clean %>% 
+  brain_join(glasser) %>% 
+  reposition_brain(hemi ~ side) %>% 
+  ggplot(aes(fill = estimate), colour = "grey80") + # Change line colour
+  geom_sf() + 
+  scale_fill_viridis(na.value = "grey90", # Change background grey colour
+                     option = "plasma", 
+                     direction = 1, 
+                     limits = c(-0.5, 0.5), # Change limits here
+                     name = "Model estimates") +
+  geom_label_repel(
+    aes(label = ifelse(!is.na(estimate), region, NA), 
+        geometry = geometry),
+    stat = "sf_coordinates",
+    min.segment.length = 0,
+    box.padding = 0.6, 
+    label.size = NA, fill = NA,
+    force = 0.5, fontface = "bold",
+    fill = "grey60",
+    size = 3, 
+    seed = 123) +
+  theme_void() +
+  theme(legend.position = "bottom",
+        legend.direction = "horizontal",
+        legend.title = element_text(hjust = 0.5, size = 14),
+        legend.title.position = "top",
+        legend.key.width = unit(2, "cm") ,
+        legend.key.height = unit(0.8, "cm"),
+        legend.text = element_text(size = 12))
+
+sleep_unc_plot <- sleep_unc_plot + 
+  annotate("text", x = 1, y = 540, label = "(D)", size = 5, fontface = "bold") +
+  annotate("text", x = 330, y = 540, label = "Sleep", size = 5, fontface = "bold") +
+  annotate("text", x = 80, y = 480, label = "P", size = 5, fontface = "bold") +
+  annotate("text", x = 160, y = 480, label = "A", size = 5, fontface = "bold") +
+  annotate("segment", x = 90, xend = 150, y = 480, yend = 480, arrow = arrow(type = "closed", ends = "last", length = unit(0.1, "inches")), linewidth = 1) +
+  annotate("text", x = 330, y = 500, label = "RH", size = 5, fontface = "bold") +
+  annotate("text", x = 480, y = 480, label = "A", size = 5, fontface = "bold") +
+  annotate("text", x = 560, y = 480, label = "P", size = 5, fontface = "bold") +
+  annotate("segment", x = 490, xend = 550, y = 480, yend = 480, arrow = arrow(type = "closed", ends = "last", length = unit(0.1, "inches")), linewidth = 1) +
+  annotate("text", x = 330, y = 1, label = "LH", size = 5, fontface = "bold") +
+  annotate("text", x = 80, y = -20, label = "A", size = 5, fontface = "bold") +
+  annotate("text", x = 160, y = -20, label = "P", size = 5, fontface = "bold") +
+  annotate("segment", x = 90, xend = 150, y = -20, yend = -20, arrow = arrow(type = "closed", ends = "last", length = unit(0.1, "inches")), linewidth = 1) +
+  annotate("text", x = 560, y = -20, label = "A", size = 5, fontface = "bold") +
+  annotate("text", x = 480, y = -20, label = "P", size = 5, fontface = "bold") +
+  annotate("segment", x = 490, xend = 550, y = -20, yend = -20, arrow = arrow(type = "closed", ends = "last", length = unit(0.1, "inches")), linewidth = 1)
+
+sleep_unc_plot
+
+ggsave("sleep_unc_plot.tiff", plot = sleep_unc_plot, width = 8, height = 6, dpi = 300)
+
+# Combine all plots
+
+combined_unc_plots_leg <- ggarrange(mvpa_unc_plot, lpa_unc_plot, sb_unc_plot, sleep_unc_plot, ncol=2, nrow=2, common.legend = TRUE, legend="bottom")
+combined_unc_plots_leg
+ggsave("../04.figures/combined_unc_plots_leg.tiff", plot = combined_unc_plots_leg, width = 16, height = 14, dpi = 300)
+
+
+
+```
+
+##### FDR-corrected
+```{r, message=FALSE}
+# MVPA
+## Clean data FDR
+mvpa_lhrh_vol_gls_results_fdr_clean <- mvpa_lhrh_vol_gls_results_fdr %>% 
+  mutate(hemi = ifelse(str_detect(label, "lh_"), "left",
+                ifelse(str_detect(label, "rh_"), "right",
+                NA)),
+         label = str_trim(label),
+         label = str_remove(label, "_ROI_volume"),
+         region = str_remove(label, "lh_L_|rh_R_|_volume")) %>%
+  mutate(label = str_replace_all(label, "_cm_gls", ""),
+         region = str_replace_all(region, "_cm_gls", ""),
+         region = str_replace_all(region, "_", "-")) %>% 
+  filter(region != "rh-QUESTMARK" & label != "rh_QUESTMARK_volume") %>% 
+  filter(region != "lh-QUESTMARK" & label != "lh_QUESTMARK_volume") %>% 
+  select(estimate, region, hemi, label)
+
+### Plot
+mvpa_lhrh_vol_gls_results_fdr_clean %>% 
+  ggplot() +
+  geom_brain(atlas = glasser,
+             position = position_brain(hemi ~ side),
+             aes(fill = estimate), colour = "grey80") +
+  scale_fill_viridis(na.value = "grey90", option = "plasma") +
+  theme_void()
+
+mvpa_fdr_plot <- mvpa_lhrh_vol_gls_results_fdr_clean %>% 
+  brain_join(glasser) %>% 
+  reposition_brain(hemi ~ side) %>% 
+  ggplot(aes(fill = estimate), colour = "grey80") + # Change line colour
+  geom_sf() + 
+  scale_fill_viridis(na.value = "grey90", # Change background grey colour
+                     option = "plasma", 
+                     direction = 1, 
+                     limits = c(-0.5, 0.5), # Change limits here
+                     name = "Model estimates") +
+  geom_label_repel(
+    aes(label = ifelse(!is.na(estimate), region, NA), 
+        geometry = geometry),
+    stat = "sf_coordinates",
+    min.segment.length = 0,
+    box.padding = 0.6, 
+    label.size = NA, fill = NA,
+    force = 0.5, fontface = "bold",
+    fill = "grey60",
+    size = 3, 
+    seed = 123) +
+  theme_void() +
+  theme(legend.position = "bottom",
+        legend.direction = "horizontal",
+        legend.title = element_text(hjust = 0.5, size = 14),
+        legend.title.position = "top",
+        legend.key.width = unit(2, "cm") ,
+        legend.key.height = unit(0.8, "cm"),
+        legend.text = element_text(size = 12))
+
+mvpa_fdr_plot <- mvpa_fdr_plot + 
+  annotate("text", x = 1, y = 540, label = "(A)", size = 5, fontface = "bold") +
+  annotate("text", x = 330, y = 540, label = "Moderate-to-vigorous physical activity", size = 5, fontface = "bold") +
+  annotate("text", x = 80, y = 480, label = "P", size = 5, fontface = "bold") +
+  annotate("text", x = 160, y = 480, label = "A", size = 5, fontface = "bold") +
+  annotate("segment", x = 90, xend = 150, y = 480, yend = 480, arrow = arrow(type = "closed", ends = "last", length = unit(0.1, "inches")), linewidth = 1) +
+  annotate("text", x = 330, y = 500, label = "RH", size = 5, fontface = "bold") +
+  annotate("text", x = 480, y = 480, label = "A", size = 5, fontface = "bold") +
+  annotate("text", x = 560, y = 480, label = "P", size = 5, fontface = "bold") +
+  annotate("segment", x = 490, xend = 550, y = 480, yend = 480, arrow = arrow(type = "closed", ends = "last", length = unit(0.1, "inches")), linewidth = 1) +
+  annotate("text", x = 330, y = 1, label = "LH", size = 5, fontface = "bold") +
+  annotate("text", x = 80, y = -20, label = "A", size = 5, fontface = "bold") +
+  annotate("text", x = 160, y = -20, label = "P", size = 5, fontface = "bold") +
+  annotate("segment", x = 90, xend = 150, y = -20, yend = -20, arrow = arrow(type = "closed", ends = "last", length = unit(0.1, "inches")), linewidth = 1) +
+  annotate("text", x = 560, y = -20, label = "A", size = 5, fontface = "bold") +
+  annotate("text", x = 480, y = -20, label = "P", size = 5, fontface = "bold") +
+  annotate("segment", x = 490, xend = 550, y = -20, yend = -20, arrow = arrow(type = "closed", ends = "last", length = unit(0.1, "inches")), linewidth = 1)
+
+mvpa_fdr_plot
+
+#ggsave("../04.figures/mvpa_fdr_plot.tiff", plot = mvpa_fdr_plot, width = 8, height = 6, dpi = 300)
+
+# SB
+## Clean data
+sb_lhrh_vol_gls_results_fdr_clean <- sb_lhrh_vol_gls_results_fdr %>% 
+  mutate(hemi = ifelse(str_detect(label, "lh_"), "left",
+                ifelse(str_detect(label, "rh_"), "right",
+                NA)),
+         label = str_trim(label),
+         label = str_remove(label, "_ROI_volume"),
+         region = str_remove(label, "lh_L_|rh_R_|_volume")) %>%
+  mutate(label = str_replace_all(label, "_cm_gls", ""),
+         region = str_replace_all(region, "_cm_gls", ""),
+         region = str_replace_all(region, "_", "-")) %>% 
+  filter(region != "rh-QUESTMARK" & label != "rh_QUESTMARK_volume") %>% 
+  filter(region != "lh-QUESTMARK" & label != "lh_QUESTMARK_volume") %>% 
+  select(estimate, region, hemi, label)
+
+### Plot
+sb_lhrh_vol_gls_results_fdr_clean %>% 
+  ggplot() +
+  geom_brain(atlas = glasser,
+             position = position_brain(hemi ~ side),
+             aes(fill = estimate), colour = "grey80") +
+  scale_fill_viridis(na.value = "grey90", option = "plasma") +
+  theme_void()
+
+sb_fdr_plot <- sb_lhrh_vol_gls_results_fdr_clean %>% 
+  brain_join(glasser) %>% 
+  reposition_brain(hemi ~ side) %>% 
+  ggplot(aes(fill = estimate), colour = "grey80") + # Change line colour
+  geom_sf() + 
+  scale_fill_viridis(na.value = "grey90", # Change background grey colour
+                     option = "plasma", 
+                     direction = 1, 
+                     limits = c(-0.5, 0.5), # Change limits here
+                     name = "Model estimates") +
+  geom_label_repel(
+    aes(label = ifelse(!is.na(estimate), region, NA), 
+        geometry = geometry),
+    stat = "sf_coordinates",
+    min.segment.length = 0,
+    box.padding = 0.6, 
+    label.size = NA, fill = NA,
+    force = 0.5, fontface = "bold",
+    fill = "grey60",
+    size = 3, 
+    seed = 123) +
+  theme_void() +
+  theme(legend.position = "bottom",
+        legend.direction = "horizontal",
+        legend.title = element_text(hjust = 0.5, size = 14),
+        legend.title.position = "top",
+        legend.key.width = unit(2, "cm") ,
+        legend.key.height = unit(0.8, "cm"),
+        legend.text = element_text(size = 12))
+
+sb_fdr_plot <- sb_fdr_plot + 
+  annotate("text", x = 1, y = 540, label = "(B)", size = 5, fontface = "bold") +
+  annotate("text", x = 330, y = 540, label = "Sedentary behavior", size = 5, fontface = "bold") +
+  annotate("text", x = 80, y = 480, label = "P", size = 5, fontface = "bold") +
+  annotate("text", x = 160, y = 480, label = "A", size = 5, fontface = "bold") +
+  annotate("segment", x = 90, xend = 150, y = 480, yend = 480, arrow = arrow(type = "closed", ends = "last", length = unit(0.1, "inches")), linewidth = 1) +
+  annotate("text", x = 330, y = 500, label = "RH", size = 5, fontface = "bold") +
+  annotate("text", x = 480, y = 480, label = "A", size = 5, fontface = "bold") +
+  annotate("text", x = 560, y = 480, label = "P", size = 5, fontface = "bold") +
+  annotate("segment", x = 490, xend = 550, y = 480, yend = 480, arrow = arrow(type = "closed", ends = "last", length = unit(0.1, "inches")), linewidth = 1) +
+  annotate("text", x = 330, y = 1, label = "LH", size = 5, fontface = "bold") +
+  annotate("text", x = 80, y = -20, label = "A", size = 5, fontface = "bold") +
+  annotate("text", x = 160, y = -20, label = "P", size = 5, fontface = "bold") +
+  annotate("segment", x = 90, xend = 150, y = -20, yend = -20, arrow = arrow(type = "closed", ends = "last", length = unit(0.1, "inches")), linewidth = 1) +
+  annotate("text", x = 560, y = -20, label = "A", size = 5, fontface = "bold") +
+  annotate("text", x = 480, y = -20, label = "P", size = 5, fontface = "bold") +
+  annotate("segment", x = 490, xend = 550, y = -20, yend = -20, arrow = arrow(type = "closed", ends = "last", length = unit(0.1, "inches")), linewidth = 1)
+
+sb_fdr_plot
+
+ggsave("../04.figures/sb_fdr_plot.tiff", plot = sb_fdr_plot, width = 8, height = 6, dpi = 300)
+
+combined_fdr_plots <- ggarrange(mvpa_fdr_plot, sb_fdr_plot, nrow=2, common.legend = TRUE, legend="bottom")
+combined_fdr_plots
+
+#ggsave("../04.figures/combined_fdr_plots.png", plot = combined_fdr_plots, width = 12, height = 16, dpi = 300)
+
+
+# LPA and Sleep - no FDR survived so no plots generated
+
+```
+
+# Compositional isotemporal substitution
+```{r, message=FALSE}
+its_data <- all_data_gls %>% 
+  dplyr::select("id","adas_cog_plus","mvpa_min_clos","mvpa_pct_clos","sedentary_min_clos","sedentary_pct_clos",
+                "light_pa_min_clos","light_pa_pct_clos","sleep_min_clos","sleep_pct_clos",
+                "age", "education", "sex", "eicv", "rct", "rh_R_TE2a_ROI_volume_cm_gls") %>% 
+  mutate(rct = as.factor(rct),
+         education = as.factor(education)) %>% 
+  rename("Sleep" = "sleep_min_clos",
+         "Sedentary_behavior" = "sedentary_min_clos",
+         "Light_PA" = "light_pa_min_clos",
+         "MVPA" = "mvpa_min_clos")
+
+skim(its_data$rh_R_TE2a_ROI_volume_cm_gls)
+
+its_te2a <- 
+    predict_delta_comps(
+        dataf = its_data,
+        y = "rh_R_TE2a_ROI_volume_cm_gls",
+        comps = c("Sleep",
+                  "Sedentary_behavior", 
+                  "Light_PA",
+                  "MVPA"),
+        covars = c("age", "education", "sex", "eicv", "rct"),
+        deltas =  seq(-30, 30, by = 10) / (24 * 60), 
+        comparisons = "one-v-one", # one-v-one shows replacing one with another and prop-realloc replacing one with any other
+        alpha = 0.05
+    )
+
+# Estimates
+attr(its_te2a, "mean_pred")
+
+# Plotting
+its_plot <- plot_delta_comp(
+    its_te2a, 
+    comp_total = 1440, 
+    units_lab = "Min/day" 
+) +
+  labs(x = paste0("Change in 24-HAC movement behavior composition (min/day)"),
+       y = paste0("Predicted change in outcome right TE2a region volume with 95% CI"))
+its_plot
+
+#ggsave(plot = its_plot,  "../04.figures/isotemp_subs_20240526.jpeg", dpi = 300, height = 8, width = 8)
+
+# Extracting delta predicted and upper/lower 95%CI
+## Cleaning special characters
+names(its_te2a) <- gsub(x = names(its_te2a), pattern = "\\+", replacement = "_plus")
+names(its_te2a) <- gsub(x = names(its_te2a), pattern = "\\-", replacement = "_minus")
+
+# Adding SB and removing sleep
+## Filtering 
+its_te2a_addsb_remslp <- its_te2a %>% 
+  group_by(comp_plus) %>% 
+  filter(comp_minus == "Sleep") %>% 
+  ungroup() %>% 
+  filter(comp_plus == "Sedentary_behavior")
+
+## Extracting values
+its_te2a_addsb_remslp$delta_pred
+its_te2a_addsb_remslp$ci_lo
+its_te2a_addsb_remslp$ci_up
+
+# Adding LPA and removing sleep
+## Filtering 
+its_te2a_addlpa_remslp <- its_te2a %>% 
+  group_by(comp_plus) %>% 
+  filter(comp_minus == "Sleep") %>% 
+  ungroup() %>% 
+  filter(comp_plus == "Light_PA")
+
+## Extracting values
+its_te2a_addlpa_remslp$delta_pred
+its_te2a_addlpa_remslp$ci_lo
+its_te2a_addlpa_remslp$ci_up
+
+# Adding MVPA and removing sleep
+## Filtering 
+its_te2a_addmvpa_remslp <- its_te2a %>% 
+  group_by(comp_plus) %>% 
+  filter(comp_minus == "Sleep") %>% 
+  ungroup() %>% 
+  filter(comp_plus == "MVPA")
+
+## Extracting values
+its_te2a_addmvpa_remslp$delta_pred
+its_te2a_addmvpa_remslp$ci_lo
+its_te2a_addmvpa_remslp$ci_up
+
+# Adding LPA and removing SB
+## Filtering 
+its_te2a_addlpa_remsb <- its_te2a %>% 
+  group_by(comp_plus) %>% 
+  filter(comp_minus == "Sedentary_behavior") %>% 
+  ungroup() %>% 
+  filter(comp_plus == "Light_PA")
+
+## Extracting values
+its_te2a_addlpa_remsb$delta_pred
+its_te2a_addlpa_remsb$ci_lo
+its_te2a_addlpa_remsb$ci_up
+
+# Adding MVPA and removing SB
+## Filtering 
+its_te2a_addmvpa_remsb <- its_te2a %>% 
+  group_by(comp_plus) %>% 
+  filter(comp_minus == "Sedentary_behavior") %>% 
+  ungroup() %>% 
+  filter(comp_plus == "MVPA")
+
+## Extracting values
+its_te2a_addmvpa_remsb$delta_pred
+its_te2a_addmvpa_remsb$ci_lo
+its_te2a_addmvpa_remsb$ci_up
+its_te2a_addmvpa_remsb$sig
+
+## Percentage
+delta_mvpa_sb <- c(-0.08023520,-0.05017193,-0.02373601,0,0.02165424,0.04165974,0.06033201)
+avg_vol <- 2.90
+pct_change_sb_mvpa <- (delta_mvpa_sb / avg_vol)*100
+pct_change_sb_mvpa
+
+# Adding MVPA and removing LPA
+## Filtering 
+its_te2a_addmvpa_remlpa <- its_te2a %>% 
+  group_by(comp_plus) %>% 
+  filter(comp_minus == "Light_PA") %>% 
+  ungroup() %>% 
+  filter(comp_plus == "MVPA")
+
+## Extracting values
+its_te2a_addmvpa_remlpa$delta_pred
+its_te2a_addmvpa_remlpa$ci_lo
+its_te2a_addmvpa_remlpa$ci_up
+```
